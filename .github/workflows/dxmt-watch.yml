@@ -1,0 +1,87 @@
+name: Watch upstream
+
+# Our line is the branch "ferrum": upstream DXMT plus our commits. Once a week (and on demand) this
+#   1. keeps "main" a plain copy of upstream's main,
+#   2. tries our commits on top of upstream's newest code in a branch "ferrum-next",
+#   3. says the result in ONE issue: nothing new / a clean rebase / a conflict in these files.
+# It changes nothing that ships. A new DXMT reaches users only after it is built, tested on the real
+# game (scripts/smoke_test.py in the product repository) and pinned there.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ferrum
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/3Shain/dxmt.git
+          git fetch --quiet upstream main
+
+      - name: Keep main a mirror of upstream
+        # A push that changes workflow files is refused for the built-in token; that only means the mirror waits.
+        run: git push origin upstream/main:refs/heads/main || echo "::warning::main could not be updated (workflow files changed upstream?)"
+
+      - name: Try our commits on top of upstream
+        id: try
+        run: |
+          git config user.name "dxmt-watch"
+          git config user.email "actions@users.noreply.github.com"
+          base=$(git merge-base HEAD upstream/main)
+          behind=$(git rev-list --count "$base"..upstream/main)
+          ours=$(git rev-list --count upstream/main.."HEAD" 2>/dev/null || git rev-list --count "$base"..HEAD)
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          echo "ours=$ours" >> "$GITHUB_OUTPUT"
+          echo "upstream=$(git rev-parse --short upstream/main)" >> "$GITHUB_OUTPUT"
+          if [ "$behind" = 0 ]; then echo "state=current" >> "$GITHUB_OUTPUT"; exit 0; fi
+          git checkout -q -b ferrum-next
+          if git rebase upstream/main > /tmp/rebase.log 2>&1; then
+            if git push --force origin ferrum-next; then echo "state=clean" >> "$GITHUB_OUTPUT"; else echo "state=clean-unpushed" >> "$GITHUB_OUTPUT"; fi
+          else
+            echo "files=$(git diff --name-only --diff-filter=U | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+            git rebase --abort
+            echo "state=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Say it in one issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE: ${{ steps.try.outputs.state }}
+          BEHIND: ${{ steps.try.outputs.behind }}
+          UP: ${{ steps.try.outputs.upstream }}
+          FILES: ${{ steps.try.outputs.files }}
+        run: |
+          title="Upstream DXMT has news for us"
+          n=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ "$STATE" = current ]; then
+            [ -n "$n" ] && gh issue close "$n" --comment "ferrum is level with upstream ($UP) again."
+            exit 0
+          fi
+          case "$STATE" in
+            clean)          what="Our commits rebase cleanly onto upstream \`$UP\`: branch \`ferrum-next\` is ready." ;;
+            clean-unpushed) what="Our commits rebase cleanly onto upstream \`$UP\`, but the push of \`ferrum-next\` was refused (upstream changed workflow files). Rebase locally." ;;
+            conflict)       what="**Conflict.** Rebasing our commits onto upstream \`$UP\` stops in: $FILES. Fix by hand." ;;
+          esac
+          body="Upstream \`main\` is **$BEHIND commits** ahead of \`ferrum\` (now \`$UP\`).
+
+          $what
+
+          Before anything reaches users (in the product repository):
+          1. set \`TAG\` in \`scripts/build-dxmt.sh\` to a new tag on the branch and run \`scripts/build-dxmt.sh\` (this is the build check);
+          2. \`scripts/pack-dxmt.sh\`, install, then \`python3 scripts/smoke_test.py\` and press Play (the game check);
+          3. commit \`compat/results/\`, pin the archive in \`components.json\`: the compatibility gate then passes.
+
+          Nothing is shipped automatically. If the game does not need anything new, closing this issue is fine."
+          if [ -n "$n" ]; then gh issue edit "$n" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
