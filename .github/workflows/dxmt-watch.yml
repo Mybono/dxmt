@@ -64,9 +64,14 @@ jobs:
           FILES: ${{ steps.try.outputs.files }}
         run: |
           title="Upstream DXMT has news for us"
-          n=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          # REST calls: the built-in token is refused on the GraphQL one that `gh issue create` uses.
+          repo="${{ github.repository }}"
+          n=$(gh api "repos/$repo/issues?state=open&per_page=100" --jq "[.[] | select(.title == \"$title\")][0].number // empty")
           if [ "$STATE" = current ]; then
-            [ -n "$n" ] && gh issue close "$n" --comment "ferrum is level with upstream ($UP) again."
+            if [ -n "$n" ]; then
+              gh api -X POST "repos/$repo/issues/$n/comments" -f body="ferrum is level with upstream ($UP) again."
+              gh api -X PATCH "repos/$repo/issues/$n" -f state=closed
+            fi
             exit 0
           fi
           case "$STATE" in
@@ -84,4 +89,5 @@ jobs:
           3. commit \`compat/results/\`, pin the archive in \`components.json\`: the compatibility gate then passes.
 
           Nothing is shipped automatically. If the game does not need anything new, closing this issue is fine."
-          if [ -n "$n" ]; then gh issue edit "$n" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
+          if [ -n "$n" ]; then gh api -X PATCH "repos/$repo/issues/$n" -f body="$body"
+          else gh api -X POST "repos/$repo/issues" -f title="$title" -f body="$body"; fi
