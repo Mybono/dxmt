@@ -1,8 +1,8 @@
 name: Watch upstream
 
-# Our line is the branch "ferrum": upstream DXMT plus our commits. Once a week (and on demand) this
+# Our line is the branch "patched": upstream DXMT plus our commits. Once a week (and on demand) this
 #   1. keeps "main" a plain copy of upstream's main,
-#   2. tries our commits on top of upstream's newest code in a branch "ferrum-next",
+#   2. tries our commits on top of upstream's newest code in a branch "patched-next",
 #   3. says the result in ONE issue: nothing new / a clean rebase / a conflict in these files.
 # It changes nothing that ships. A new DXMT reaches users only after it is built, tested on the real
 # game (scripts/smoke_test.py in the product repository) and pinned there.
@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ferrum
+          ref: patched
           fetch-depth: 0
 
       - name: Fetch upstream
@@ -46,9 +46,9 @@ jobs:
           echo "ours=$ours" >> "$GITHUB_OUTPUT"
           echo "upstream=$(git rev-parse --short upstream/main)" >> "$GITHUB_OUTPUT"
           if [ "$behind" = 0 ]; then echo "state=current" >> "$GITHUB_OUTPUT"; exit 0; fi
-          git checkout -q -b ferrum-next
+          git checkout -q -b patched-next
           if git rebase upstream/main > /tmp/rebase.log 2>&1; then
-            if git push --force origin ferrum-next; then echo "state=clean" >> "$GITHUB_OUTPUT"; else echo "state=clean-unpushed" >> "$GITHUB_OUTPUT"; fi
+            if git push --force origin patched-next; then echo "state=clean" >> "$GITHUB_OUTPUT"; else echo "state=clean-unpushed" >> "$GITHUB_OUTPUT"; fi
           else
             echo "files=$(git diff --name-only --diff-filter=U | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
             git rebase --abort
@@ -69,17 +69,17 @@ jobs:
           n=$(gh api "repos/$repo/issues?state=open&per_page=100" --jq "[.[] | select(.title == \"$title\")][0].number // empty")
           if [ "$STATE" = current ]; then
             if [ -n "$n" ]; then
-              gh api -X POST "repos/$repo/issues/$n/comments" -f body="ferrum is level with upstream ($UP) again."
+              gh api -X POST "repos/$repo/issues/$n/comments" -f body="patched is level with upstream ($UP) again."
               gh api -X PATCH "repos/$repo/issues/$n" -f state=closed
             fi
             exit 0
           fi
           case "$STATE" in
-            clean)          what="Our commits rebase cleanly onto upstream \`$UP\`: branch \`ferrum-next\` is ready." ;;
-            clean-unpushed) what="Our commits rebase cleanly onto upstream \`$UP\`, but the push of \`ferrum-next\` was refused (upstream changed workflow files). Rebase locally." ;;
+            clean)          what="Our commits rebase cleanly onto upstream \`$UP\`: branch \`patched-next\` is ready." ;;
+            clean-unpushed) what="Our commits rebase cleanly onto upstream \`$UP\`, but the push of \`patched-next\` was refused (upstream changed workflow files). Rebase locally." ;;
             conflict)       what="**Conflict.** Rebasing our commits onto upstream \`$UP\` stops in: $FILES. Fix by hand." ;;
           esac
-          body="Upstream \`main\` is **$BEHIND commits** ahead of \`ferrum\` (now \`$UP\`).
+          body="Upstream \`main\` is **$BEHIND commits** ahead of \`patched\` (now \`$UP\`).
 
           $what
 
